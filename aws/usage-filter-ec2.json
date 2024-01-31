@@ -1,0 +1,8 @@
+[
+  {
+    "Type": "DIMENSION",
+    "Key": "SERVICE",
+    "Values": ["Amazon EC2"]
+  }
+]
+
