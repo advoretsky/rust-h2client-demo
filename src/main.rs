@@ -1,15 +1,11 @@
-use tokio::sync::{mpsc, Mutex};
-use tokio::time::sleep;
-use std::sync::Arc;
+use async_channel::{Receiver, Sender};
 use std::time::Duration;
+use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() {
-    // Create an asynchronous channel
-    let (tx, rx) = mpsc::channel::<String>(10);
-
-    // Wrap the receiver in Arc<Mutex> to allow shared ownership
-    let rx = Arc::new(Mutex::new(rx));
+    // Create a broadcast channel
+    let (tx, rx) = async_channel::bounded::<String>(1024);
 
     // Spawn a Tokio task to fetch filenames asynchronously
     tokio::spawn(async move {
@@ -22,9 +18,9 @@ async fn main() {
     // Spawn multiple Tokio tasks for handling filenames concurrently
     let handler_tasks: Vec<_> = (0..num_handlers)
         .map(|i| {
-            let rx = Arc::clone(&rx);
+            let receiver = rx.clone();
             tokio::spawn(async move {
-                handle_filenames(&rx, i).await;
+                handle_filenames(receiver, i).await;
             })
         })
         .collect();
@@ -35,7 +31,7 @@ async fn main() {
     }
 }
 
-async fn fetch_filenames(tx: mpsc::Sender<String>) {
+async fn fetch_filenames(tx: Sender<String>) {
     // Simulating a continuous process of fetching filenames
     for i in 0..10 {
         let filename = format!("file_{}.txt", i);
@@ -44,11 +40,19 @@ async fn fetch_filenames(tx: mpsc::Sender<String>) {
     }
 }
 
-async fn handle_filenames(rx: &Arc<Mutex<mpsc::Receiver<String>>>, id: usize) {
+async fn handle_filenames(rx: Receiver<String>, id: usize) {
     // Simulating handling of filenames by multiple concurrent tasks
-    while let Some(filename) = rx.lock().await.recv().await {
-        println!("Handler {} is processing filename: {}", id, filename);
-        // Simulate some processing time
-        sleep(Duration::from_secs(2)).await;
+    loop {
+        match rx.recv().await {
+            Ok(filename) => {
+                println!("Handler {} is processing filename: {}", id, filename);
+                // // Simulate some processing time
+                // sleep(Duration::from_secs(2)).await;
+            }
+            Err(_) => {
+                println!("Handler {} received channel closed signal", id);
+                break; // Exit the loop gracefully when the channel is closed
+            }
+        }
     }
 }
