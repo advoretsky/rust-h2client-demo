@@ -1,5 +1,10 @@
+use bytes::Bytes;
 use async_channel::{Receiver, Sender};
 use std::time::Duration;
+use client::SendRequest;
+use h2::client;
+use reqwest::Url;
+use tokio::net::{TcpStream};
 use tokio::time::sleep;
 
 #[tokio::main]
@@ -20,7 +25,7 @@ async fn main() {
         .map(|i| {
             let receiver = rx.clone();
             tokio::spawn(async move {
-                handle_filenames(receiver, i).await;
+                handle_filenames(receiver, i, "https://44.223.28.16:443/").await;
             })
         })
         .collect();
@@ -39,20 +44,66 @@ async fn fetch_filenames(tx: Sender<String>) {
         sleep(Duration::from_secs(1)).await;
     }
 }
+async fn new_connection(tcp: TcpStream) -> Result<SendRequest<Bytes>, h2::Error> {
+    let (send_request, connection) = client::handshake(tcp).await?;
+    tokio::spawn(async move {
+        connection.await.unwrap();
+    });
+    Ok(send_request)
+}
 
-async fn handle_filenames(rx: Receiver<String>, id: usize) {
-    // Simulating handling of filenames by multiple concurrent tasks
-    loop {
-        match rx.recv().await {
-            Ok(filename) => {
-                println!("Handler {} is processing filename: {}", id, filename);
-                // // Simulate some processing time
-                // sleep(Duration::from_secs(2)).await;
+async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
+    let send_request: Option<SendRequest<Bytes>> = Default::default();
+    while let Ok(filename) = rx.recv().await {
+        loop { // TODO implement limited number of retries here
+            let send_request = send_request.clone();
+            let mut send_request = match send_request {
+                None => {
+                    connect_to_server(base_url).await
+                }
+                Some(v) => v
             }
-            Err(_) => {
-                println!("Handler {} received channel closed signal", id);
-                break; // Exit the loop gracefully when the channel is closed
+                .ready().await.unwrap();
+
+            let mut uri = base_url.parse::<Url>().unwrap();
+            uri.set_path(&filename);
+            let request = http::Request::builder()
+                .uri(uri.as_str())
+                .body(())
+                .unwrap();
+
+            let (response, _) = send_request.send_request(request, true).unwrap();
+            let (head, mut body) = response.await.unwrap().into_parts();
+            println!("handler {:?} received response: {:?}", id, head); // TODO open a file
+            let mut flow_control = body.flow_control().clone();
+            while let Some(chunk) = body.data().await {
+                let chunk = chunk.unwrap();
+                println!("RX: {:?}", chunk); // TODO write to the file
+
+                // Let the server send more data.
+                let _ = flow_control.release_capacity(chunk.len());
             }
         }
+    }
+}
+
+async fn connect_to_server(base_url: &str) -> SendRequest<Bytes> {
+    let url = Url::parse(base_url).expect("Failed to parse URL");
+    let host = url.host_str().expect("URL does not contain a host");
+    let port = url.port().unwrap_or(443);
+
+    loop {
+        match TcpStream::connect(format!("{}:{}", host, port)).await {
+            Ok(tcp) => match new_connection(tcp).await {
+                Ok(connection) => return connection,
+                Err(err) => {
+                    eprintln!("Error establishing H2 connection: {}", err);
+                }
+            },
+            Err(err) => {
+                eprintln!("Error establishing TCP connection: {}", err);
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
 }

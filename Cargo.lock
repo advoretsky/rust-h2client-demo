@@ -145,7 +145,10 @@ name = "dirsync"
 version = "0.1.0"
 dependencies = [
  "async-channel",
+ "bytes",
  "futures",
+ "h2",
+ "http",
  "reqwest",
  "sysinfo",
  "tokio",
