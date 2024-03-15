@@ -2,12 +2,14 @@ mod tls;
 
 use std::error::Error;
 use std::sync::Arc;
+use std::time::Duration;
 use bytes::Bytes;
 use async_channel::{Receiver, Sender};
 use client::SendRequest;
-use h2::{client};
+use h2::client;
 use reqwest::Url;
-use tokio::net::{TcpStream};
+use tokio::net::TcpStream;
+use tokio::time::sleep;
 use tokio_rustls::{rustls::ClientConfig, TlsConnector};
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::ServerName;
@@ -43,7 +45,7 @@ async fn main() {
 
 async fn fetch_filenames(tx: Sender<String>) {
     // Simulating a continuous process of fetching filenames
-    for i in 1..10 {
+    for i in 1..2001 {
         let filename = format!("file{:02}.txt", i);
         tx.send(filename).await.expect("Failed to send filename");
         // sleep(Duration::from_secs(1)).await;
@@ -57,54 +59,74 @@ async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
             return
         }
     };
+
+    let mut handles = Vec::new();
+
     let h2 = connect_to_server(&base_url).await;
     'filename: while let Ok(filename) = rx.recv().await {
-        
+
         let uri = match base_url.join(&filename) {
             Ok(v) => v,
             Err(err) => {
                 eprintln!("error building file path for {}: {}", filename, err);
-                break 'filename;
+                continue
             }
         };
         let request = match http::Request::builder()
             .method("GET")
             .uri(uri.as_str())
-            .body(()){
+            .body(()) {
             Ok(v) => v,
             Err(err) => {
                 eprintln!("failed building a request: {}", err);
-                break
+                continue
             }
         };
-        // loop of retries
-        loop { // TODO implement limited number of retries here
 
-            if let Err(err) = h2.clone().ready().await {
-                eprintln!("error waiting for SendRequest to become ready: {}", err);
-                continue 'filename
-            }
+        if let Err(err) = h2.clone().ready().await {
+            eprintln!("error waiting for SendRequest to become ready: {}", err);
+            break 'filename
+        }
 
+        let mut h2 = h2.clone();
+
+        let handle = tokio::spawn(async move {
             println!("sending request to fetch {}", uri.as_str());
-            let (response, _) = h2.clone().send_request(request.clone(), true).unwrap();
+            let (response, _) = h2.send_request(request.clone(), true).unwrap();
             let (head, mut body) = match response.await {
                 Ok(r) => r.into_parts(),
                 Err(err) => {
                     eprintln!("failed downloading file {}: {}", uri.as_str(), err);
-                    continue
+                    return
                 }
             };  // .unwrap().into_parts();
             println!("handler {:?} received response: {:?}", id, head.status); // TODO open a file
             let mut flow_control = body.flow_control().clone();
             while let Some(chunk) = body.data().await {
                 let chunk = chunk.unwrap();
-                println!("RX: {:?}", chunk.len()); // TODO write to the file
+                println!("RX: {:?} for {}", chunk.len(), filename); // TODO write to the file
 
                 // Let the server send more data.
                 let _ = flow_control.release_capacity(chunk.len());
             }
-            break
+        });
+        handles.push(handle);
+    }
+
+    let total_number = handles.len();
+    loop {
+        sleep(Duration::from_millis(1000)).await;
+        // Wait for a short period to check for completed tasks
+
+        // Update the list of handles to remove completed tasks
+        handles.retain(|handle| !handle.is_finished());
+
+        // If there are still unfinished tasks, print how many are left
+        if handles.is_empty() {
+            println!("all {} tasks are finished", total_number);
+            break;
         }
+        println!("{} tasks not finished yet", handles.len());
     }
 }
 
