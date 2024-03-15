@@ -8,9 +8,14 @@ edition = "2021"
 [dependencies]
 async-channel = "2.1.1"
 futures = "0.3.30"
-reqwest = { version = "0.11.23", default-features = false, features = ["stream", "rustls-tls"] }
 sysinfo = "0.30.5"
-tokio = { version = "1.35.1", features = ["full"] }
-http = "0.2.11"
-h2 = "0.3.22"
+tokio = { version = "1.36.0", features = ["full"] }
+http = "1.0.0"
+h2 = "0.4.2"
 bytes = "1.5.0"
+rustls = "0.22.2"
+tokio-rustls = "0.25.0"
+webpki-roots = "0.26.1"
+rustls-native-certs = "0.7.0"
+rustls-webpki = "0.102.2"
+reqwest = "0.11.24"
