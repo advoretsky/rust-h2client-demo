@@ -1,18 +1,12 @@
+mod h2connection;
 mod tls;
 
-use std::error::Error;
-use std::sync::Arc;
 use std::time::Duration;
-use bytes::Bytes;
 use async_channel::{Receiver, Sender};
-use client::SendRequest;
-use h2::client;
+use http::Version;
 use reqwest::Url;
-use tokio::net::TcpStream;
 use tokio::time::sleep;
-use tokio_rustls::{rustls::ClientConfig, TlsConnector};
-use tokio_rustls::client::TlsStream;
-use tokio_rustls::rustls::pki_types::ServerName;
+use crate::h2connection::Connection;
 
 #[tokio::main]
 async fn main() {
@@ -48,7 +42,6 @@ async fn fetch_filenames(tx: Sender<String>) {
     for i in 1..2001 {
         let filename = format!("file{:02}.txt", i);
         tx.send(filename).await.expect("Failed to send filename");
-        // sleep(Duration::from_secs(1)).await;
     }
 }
 async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
@@ -62,8 +55,20 @@ async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
 
     let mut handles = Vec::new();
 
-    let h2 = connect_to_server(&base_url).await;
+    let mut h2: Option<Connection> = None;
+    let mut _reciever: Option<tokio::sync::mpsc::Receiver<bool>> = None;
+
     'filename: while let Ok(filename) = rx.recv().await {
+        let mut connection = match h2.as_ref() {
+            Some(v) => v,
+            None => {
+                let (h, r) = Connection::new(&base_url).await;
+                h2 = Some(h);
+                _reciever = Some(r);
+                h2.as_ref().unwrap()
+            },
+        }
+            .clone();
 
         let uri = match base_url.join(&filename) {
             Ok(v) => v,
@@ -73,8 +78,9 @@ async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
             }
         };
         let request = match http::Request::builder()
+            .version(Version::HTTP_2)
             .method("GET")
-            .uri(uri.as_str())
+            .uri(uri.path())
             .body(()) {
             Ok(v) => v,
             Err(err) => {
@@ -83,23 +89,25 @@ async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
             }
         };
 
-        if let Err(err) = h2.clone().ready().await {
+        if let Err(err) = connection.clone().ready().await {
             eprintln!("error waiting for SendRequest to become ready: {}", err);
             break 'filename
         }
 
-        let mut h2 = h2.clone();
 
         let handle = tokio::spawn(async move {
             println!("sending request to fetch {}", uri.as_str());
-            let (response, _) = h2.send_request(request.clone(), true).unwrap();
+            // TODO: handle error, especially GOAWAY
+            let (response, _) = connection.send_request(request.clone()).unwrap();
+
             let (head, mut body) = match response.await {
                 Ok(r) => r.into_parts(),
                 Err(err) => {
                     eprintln!("failed downloading file {}: {}", uri.as_str(), err);
+                    connection.mark_connection_unhealthy().await;
                     return
                 }
-            };  // .unwrap().into_parts();
+            };
             println!("handler {:?} received response: {:?}", id, head.status); // TODO open a file
             let mut flow_control = body.flow_control().clone();
             while let Some(chunk) = body.data().await {
@@ -130,69 +138,3 @@ async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
     }
 }
 
-async fn connect_to_server(url: &Url) -> SendRequest<Bytes> {
-    let host = url.host_str().expect("URL does not contain a host");
-    let port = url.port().unwrap_or(443);
-
-    loop {
-        match attempt_connect(host, port).await {
-            Ok(v) => return v,
-            Err(err) => {
-                eprintln!("{}", err);
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            }
-        }
-    }
-}
-
-async fn attempt_connect(host: &str, port: u16) -> Result<SendRequest<Bytes>, Box<dyn Error + Send>> {
-    // // Load the system's root certificates
-    // let mut root_store = RootCertStore::empty();
-    // root_store.add_parsable_certificates(
-    //     &rustls_native_certs::load_native_certs().expect("failed to load native certs")
-    // );
-    //
-    // let mut config = ClientConfig::builder()
-    //     .with_safe_defaults()
-    //     // .with_custom_certificate_verifier(Arc::new(tls::NoCertificateVerification{}))
-    //     .with_root_certificates(root_store)
-    //     .with_no_client_auth();
-
-    let mut config = ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(tls::SkipServerVerification{}))
-        .with_no_client_auth();
-
-    config.alpn_protocols.push(b"h2".to_vec()); // Enable HTTP/2 ALPN protocol negotiation.
-    let tls_connector = TlsConnector::from(Arc::new(config));
-
-    let authority = format!("{}:{}", host, port);
-    let tcp_stream = match TcpStream::connect(&authority).await {
-        Ok(v) => v,
-        Err(err) => return Err(Box::new(err))
-    };
-    let host_arc: String = host.to_owned();
-    let tls_stream = match tls_connector
-        .connect(
-            ServerName::try_from(host_arc)
-                .expect(&format!("invalid host name: {}", host)),
-            tcp_stream
-        ).await {
-        Ok(v) => v,
-        Err(err) => return Err(Box::new(err))
-    };
-    return match negotiate_h2_connection(tls_stream).await {
-        Ok(v) => Ok(v),
-        Err(err) => Err(Box::new(err))
-    };
-}
-
-async fn negotiate_h2_connection(tcp: TlsStream<TcpStream>) -> Result<SendRequest<Bytes>, h2::Error> {
-    let (send_request, connection) = client::handshake(tcp).await?;
-    tokio::spawn(async move {
-        if let Err(err) = connection.await {
-            eprintln!("Error occurred while waiting for connection to close: {}", err);
-        }
-    });
-    Ok(send_request)
-}
