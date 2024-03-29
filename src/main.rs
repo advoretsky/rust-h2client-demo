@@ -1,6 +1,8 @@
 mod h2connection;
 mod tls;
 
+use std::env;
+use std::path::PathBuf;
 use std::time::Duration;
 use async_channel::{Receiver, Sender};
 use futures::select_biased;
@@ -10,25 +12,77 @@ use tokio::time::sleep;
 use crate::h2connection::Connection;
 use futures::FutureExt;
 
+
+const BATCH_DELAY: u64 = 5;
+
+#[derive(Debug)]
+struct Config {
+    base_url: Option<String>,
+    base_dir: Option<PathBuf>,
+    files_number: Option<u32>,
+    concurrency: Option<u32>
+}
+
+fn parse_args() -> Config {
+    let args: Vec<String> = env::args().collect();
+
+    let mut config = Config {
+        base_url: None,
+        base_dir: None,
+        files_number: None,
+        concurrency: None,
+    };
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-u" | "--base-url" => {
+                i += 1;
+                config.base_url = args.get(i).cloned();
+            }
+            "-d" | "--base-dir" => {
+                i += 1;
+                config.base_dir = args.get(i).map(PathBuf::from);
+            }
+            "-n" | "--files-number" => {
+                i += 1;
+                config.files_number = args.get(i).and_then(|val| val.parse().ok());
+            }
+            "-c" | "--concurrency" => {
+                i += 1;
+                config.concurrency = args.get(i).and_then(|val| val.parse().ok());
+            }
+            _ => {
+                // Report unknown options
+                eprintln!("Unknown option: {}", args[i]);
+            }
+        }
+        i += 1;
+    }
+
+    config
+}
+
 #[tokio::main]
 async fn main() {
+    let config = parse_args();
+
+
     // Create a broadcast channel
     let (tx, rx) = async_channel::bounded::<String>(1024);
 
     // Spawn a Tokio task to fetch filenames asynchronously
     tokio::spawn(async move {
-        fetch_filenames(tx).await;
+        fetch_filenames(tx, config.files_number.unwrap()).await;
     });
 
-    // Number of handler tasks (change this value as needed)
-    let num_handlers = 1;
-
     // Spawn multiple Tokio tasks for handling filenames concurrently
-    let handler_tasks: Vec<_> = (0..num_handlers)
+    let handler_tasks: Vec<_> = (0..config.concurrency.unwrap())
         .map(|i| {
+            let base_url = config.base_url.clone().unwrap();
             let receiver = rx.clone();
             tokio::spawn(async move {
-                handle_filenames(receiver, i, "https://filestorage.localdomain/").await;
+                handle_filenames(receiver, i, base_url.as_str()).await;
             })
         })
         .collect();
@@ -39,12 +93,9 @@ async fn main() {
     }
 }
 
-const FILES_TO_GENERATE: i32 = 2000;
-const BATCH_DELAY: u64 = 25;
-
-async fn fetch_filenames(tx: Sender<String>) {
+async fn fetch_filenames(tx: Sender<String>, files_number: u32) {
     // Simulating a continuous process of fetching filenames
-    for i in 0..FILES_TO_GENERATE {
+    for i in 0..files_number {
         let filename = format!("file{:02}.txt", i);
         match tx.send(filename).await {
             Ok(_) => {}
@@ -55,7 +106,7 @@ async fn fetch_filenames(tx: Sender<String>) {
         }
     }
 }
-async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
+async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &str) {
     let base_url = match base_url.parse::<Url>() {
         Ok(v) => v,
         Err(err) => {
@@ -70,17 +121,6 @@ async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
     let mut receiver: Option<tokio::sync::mpsc::Receiver<bool>> = None;
 
     while let Ok(filename) = rx.recv().await {
-
-        let mut connection = match h2.as_ref() {
-            Some(v) => v,
-            None => {
-                let (h, r) = Connection::new(&base_url).await;
-                h2 = Some(h);
-                receiver = Some(r);
-                h2.as_ref().unwrap()
-            },
-        }
-            .clone();
 
         let uri = match base_url.join(&filename) {
             Ok(v) => v,
@@ -101,7 +141,17 @@ async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
             }
         };
 
-        loop {
+        let mut connection = loop {
+            let connection = match h2.as_ref() {
+                Some(v) => v,
+                None => {
+                    let (h, r) = Connection::new(&base_url).await;
+                    h2 = Some(h);
+                    receiver = Some(r);
+                    h2.as_ref().unwrap()
+                },
+            }.clone();
+
             select_biased! {
                 // it's important handling channel first
                 _ = receiver.as_mut().unwrap().recv().fuse() => {
@@ -113,7 +163,7 @@ async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
                             eprintln!("error waiting for SendRequest to become ready: {}", err);
                         }
                         Ok(_) => {
-                            break
+                            break connection
                         }
                     }
                 }
@@ -122,7 +172,7 @@ async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
             receiver.unwrap().close();
             h2 = None;
             receiver = None;
-        }
+        };
 
         let handle = tokio::spawn(async move {
             println!("sending request to fetch {}", uri.as_str());
@@ -136,11 +186,10 @@ async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
                     return
                 }
             };
-            println!("handler {:?} received response: {:?}", id, head.status); // TODO open a file
             let mut flow_control = body.flow_control().clone();
             while let Some(chunk) = body.data().await {
                 let chunk = chunk.unwrap();
-                println!("RX: {:?} for {}", chunk.len(), filename); // TODO write to the file
+                println!("handler {:?} status: {} RX: {:?} for {}", id, head.status, chunk.len(), filename); // TODO write to the file
 
                 // Let the server send more data.
                 let _ = flow_control.release_capacity(chunk.len());
@@ -151,7 +200,6 @@ async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
             println!("sleeping {} between batches", BATCH_DELAY);
             sleep(Duration::from_millis(BATCH_DELAY)).await;
         }
-
     }
 
     let total_number = handles.len();

@@ -55,7 +55,9 @@ impl Connection {
             Ok(_) => {
                 println!{"reported on unhealthy connection"}
             }
-            Err(err) => {println!("error reporting unhealthy connection: {}", err)}
+            Err(err) => {
+                eprintln!("error reporting unhealthy connection: {}", err)
+            }
         }
     }
 }
