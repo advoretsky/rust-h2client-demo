@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use bytes::Bytes;
 use h2::{client, SendStream};
 use h2::client::{ResponseFuture, SendRequest};
@@ -18,16 +19,8 @@ use crate::tls;
 pub struct Connection {
     send_request: SendRequest<Bytes>,
     status_sender: Sender<bool>,
+    requests_counter: Arc<AtomicU32>,
 }
-
-// impl Clone for Connection {
-//     fn clone(&self) -> Self {
-//         Connection {
-//             send_request: self.send_request.clone(),
-//             status_sender: self.status_sender.clone(),
-//         }
-//     }
-// }
 
 impl Connection {
     pub async fn new(base_url: &Url) -> (Connection, Receiver<bool>) {
@@ -38,6 +31,7 @@ impl Connection {
             Connection {
                 send_request,
                 status_sender: sender,
+                requests_counter: Arc::new(AtomicU32::new(0)),
             },
             receiver
         )
@@ -48,12 +42,19 @@ impl Connection {
     }
 
     pub fn send_request(&mut self, request: Request<()>) -> Result<(ResponseFuture, SendStream<Bytes>), h2::Error> {
+        self.requests_counter.fetch_add(1, Ordering::Relaxed);
         self.send_request.send_request(request, true)
+    }
+
+    pub fn requests_sent(& self) -> u32 {
+        self.requests_counter.load(Ordering::Relaxed)
     }
 
     pub async fn mark_connection_unhealthy(&self) {
         match self.status_sender.try_send(false) {
-            Ok(_) => {}
+            Ok(_) => {
+                println!{"reported on unhealthy connection"}
+            }
             Err(err) => {println!("error reporting unhealthy connection: {}", err)}
         }
     }

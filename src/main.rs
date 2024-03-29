@@ -3,10 +3,12 @@ mod tls;
 
 use std::time::Duration;
 use async_channel::{Receiver, Sender};
+use futures::select_biased;
 use http::Version;
 use reqwest::Url;
 use tokio::time::sleep;
 use crate::h2connection::Connection;
+use futures::FutureExt;
 
 #[tokio::main]
 async fn main() {
@@ -37,11 +39,20 @@ async fn main() {
     }
 }
 
+const FILES_TO_GENERATE: i32 = 2000;
+const BATCH_DELAY: u64 = 25;
+
 async fn fetch_filenames(tx: Sender<String>) {
     // Simulating a continuous process of fetching filenames
-    for i in 1..2001 {
+    for i in 0..FILES_TO_GENERATE {
         let filename = format!("file{:02}.txt", i);
-        tx.send(filename).await.expect("Failed to send filename");
+        match tx.send(filename).await {
+            Ok(_) => {}
+            Err(err) => {
+                eprintln!("failed to dispatch filename: {}", err);
+                break;
+            }
+        }
     }
 }
 async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
@@ -56,15 +67,16 @@ async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
     let mut handles = Vec::new();
 
     let mut h2: Option<Connection> = None;
-    let mut _reciever: Option<tokio::sync::mpsc::Receiver<bool>> = None;
+    let mut receiver: Option<tokio::sync::mpsc::Receiver<bool>> = None;
 
-    'filename: while let Ok(filename) = rx.recv().await {
+    while let Ok(filename) = rx.recv().await {
+
         let mut connection = match h2.as_ref() {
             Some(v) => v,
             None => {
                 let (h, r) = Connection::new(&base_url).await;
                 h2 = Some(h);
-                _reciever = Some(r);
+                receiver = Some(r);
                 h2.as_ref().unwrap()
             },
         }
@@ -80,7 +92,7 @@ async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
         let request = match http::Request::builder()
             .version(Version::HTTP_2)
             .method("GET")
-            .uri(uri.path())
+            .uri(uri.to_string())
             .body(()) {
             Ok(v) => v,
             Err(err) => {
@@ -89,15 +101,31 @@ async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
             }
         };
 
-        if let Err(err) = connection.clone().ready().await {
-            eprintln!("error waiting for SendRequest to become ready: {}", err);
-            break 'filename
+        loop {
+            select_biased! {
+                // it's important handling channel first
+                _ = receiver.as_mut().unwrap().recv().fuse() => {
+                    eprintln!("connection unhealthy signal received")
+                }
+                val = connection.clone().ready().fuse() => {
+                    match val {
+                        Err(err) => {
+                            eprintln!("error waiting for SendRequest to become ready: {}", err);
+                        }
+                        Ok(_) => {
+                            break
+                        }
+                    }
+                }
+            }
+            println!("recreating a connection");
+            receiver.unwrap().close();
+            h2 = None;
+            receiver = None;
         }
-
 
         let handle = tokio::spawn(async move {
             println!("sending request to fetch {}", uri.as_str());
-            // TODO: handle error, especially GOAWAY
             let (response, _) = connection.send_request(request.clone()).unwrap();
 
             let (head, mut body) = match response.await {
@@ -119,6 +147,11 @@ async fn handle_filenames(rx: Receiver<String>, id: usize, base_url: &str) {
             }
         });
         handles.push(handle);
+        if handles.len() % 10 == 0 {
+            println!("sleeping {} between batches", BATCH_DELAY);
+            sleep(Duration::from_millis(BATCH_DELAY)).await;
+        }
+
     }
 
     let total_number = handles.len();
