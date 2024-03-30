@@ -20,7 +20,8 @@ struct Config {
     base_url: Option<String>,
     base_dir: Option<PathBuf>,
     files_number: Option<u32>,
-    concurrency: Option<u32>
+    concurrency: Option<u32>,
+    max_streams: Option<u32>
 }
 
 fn parse_args() -> Config {
@@ -31,6 +32,7 @@ fn parse_args() -> Config {
         base_dir: None,
         files_number: None,
         concurrency: None,
+        max_streams: Some(500),
     };
 
     let mut i = 1;
@@ -51,6 +53,10 @@ fn parse_args() -> Config {
             "-c" | "--concurrency" => {
                 i += 1;
                 config.concurrency = args.get(i).and_then(|val| val.parse().ok());
+            }
+            "-s" | "--max-streams" => {
+                i += 1;
+                config.max_streams = args.get(i).and_then(|val| val.parse().ok());
             }
             _ => {
                 // Report unknown options
@@ -82,7 +88,7 @@ async fn main() {
             let base_url = config.base_url.clone().unwrap();
             let receiver = rx.clone();
             tokio::spawn(async move {
-                handle_filenames(receiver, i, base_url.as_str()).await;
+                handle_filenames(receiver, i, base_url.as_str(), config.max_streams.unwrap()).await;
             })
         })
         .collect();
@@ -96,7 +102,7 @@ async fn main() {
 async fn fetch_filenames(tx: Sender<String>, files_number: u32) {
     // Simulating a continuous process of fetching filenames
     for i in 0..files_number {
-        let filename = format!("file{:02}.txt", i);
+        let filename = format!("file-{:06}.json", i);
         match tx.send(filename).await {
             Ok(_) => {}
             Err(err) => {
@@ -106,7 +112,7 @@ async fn fetch_filenames(tx: Sender<String>, files_number: u32) {
         }
     }
 }
-async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &str) {
+async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &str, max_streams: u32) {
     let base_url = match base_url.parse::<Url>() {
         Ok(v) => v,
         Err(err) => {
@@ -152,18 +158,20 @@ async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &str) {
                 },
             }.clone();
 
-            select_biased! {
-                // it's important handling channel first
-                _ = receiver.as_mut().unwrap().recv().fuse() => {
-                    eprintln!("connection unhealthy signal received")
-                }
-                val = connection.clone().ready().fuse() => {
-                    match val {
-                        Err(err) => {
-                            eprintln!("error waiting for SendRequest to become ready: {}", err);
-                        }
-                        Ok(_) => {
-                            break connection
+            if connection.requests_sent() < max_streams {
+                select_biased! {
+                    // it's important handling channel first
+                    _ = receiver.as_mut().unwrap().recv().fuse() => {
+                        eprintln!("connection unhealthy signal received")
+                    }
+                    val = connection.clone().ready().fuse() => {
+                        match val {
+                            Err(err) => {
+                                eprintln!("error waiting for SendRequest to become ready: {}", err);
+                            }
+                            Ok(_) => {
+                                break connection
+                            }
                         }
                     }
                 }
@@ -196,7 +204,7 @@ async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &str) {
             }
         });
         handles.push(handle);
-        if handles.len() % 10 == 0 {
+        if handles.len() % 20 == 0 {
             println!("sleeping {} between batches", BATCH_DELAY);
             sleep(Duration::from_millis(BATCH_DELAY)).await;
         }
