@@ -20,8 +20,9 @@ struct Config {
     base_url: Option<String>,
     base_dir: Option<PathBuf>,
     files_number: Option<u32>,
-    concurrency: Option<u32>,
-    max_streams: Option<u32>
+    concurrency: u32,
+    max_streams: u32,
+    insecure: bool,
 }
 
 fn parse_args() -> Config {
@@ -31,8 +32,9 @@ fn parse_args() -> Config {
         base_url: None,
         base_dir: None,
         files_number: None,
-        concurrency: None,
-        max_streams: Some(500),
+        concurrency: 1,
+        max_streams: 500,
+        insecure: false,
     };
 
     let mut i = 1;
@@ -52,14 +54,21 @@ fn parse_args() -> Config {
             }
             "-c" | "--concurrency" => {
                 i += 1;
-                config.concurrency = args.get(i).and_then(|val| val.parse().ok());
+                if let Some(value) = args.get(i).and_then(|val| val.parse().ok()) {
+                    config.concurrency = value
+                }
             }
             "-s" | "--max-streams" => {
                 i += 1;
-                config.max_streams = args.get(i).and_then(|val| val.parse().ok());
+                if let Some(value) = args.get(i).and_then(|val| val.parse().ok()) {
+                    config.max_streams = value
+                }
             }
+            "-k" | "--insecure" => {
+                config.insecure = true
+            }
+
             _ => {
-                // Report unknown options
                 eprintln!("Unknown option: {}", args[i]);
             }
         }
@@ -69,7 +78,7 @@ fn parse_args() -> Config {
     config
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     let config = parse_args();
 
@@ -83,12 +92,17 @@ async fn main() {
     });
 
     // Spawn multiple Tokio tasks for handling filenames concurrently
-    let handler_tasks: Vec<_> = (0..config.concurrency.unwrap())
+    let handler_tasks: Vec<_> = (0..config.concurrency)
         .map(|i| {
             let base_url = config.base_url.clone().unwrap();
             let receiver = rx.clone();
             tokio::spawn(async move {
-                handle_filenames(receiver, i, base_url.as_str(), config.max_streams.unwrap()).await;
+                handle_filenames(
+                    receiver,
+                    i,
+                    base_url.as_str(),
+                    config.max_streams,
+                    config.insecure).await;
             })
         })
         .collect();
@@ -112,7 +126,7 @@ async fn fetch_filenames(tx: Sender<String>, files_number: u32) {
         }
     }
 }
-async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &str, max_streams: u32) {
+async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &str, max_streams: u32, insecure: bool) {
     let base_url = match base_url.parse::<Url>() {
         Ok(v) => v,
         Err(err) => {
@@ -151,7 +165,7 @@ async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &str, max_str
             let connection = match h2.as_ref() {
                 Some(v) => v,
                 None => {
-                    let (h, r) = Connection::new(&base_url).await;
+                    let (h, r) = Connection::new(&base_url, insecure).await;
                     h2 = Some(h);
                     receiver = Some(r);
                     h2.as_ref().unwrap()

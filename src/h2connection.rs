@@ -6,7 +6,7 @@ use h2::{client, SendStream};
 use h2::client::{ResponseFuture, SendRequest};
 use http::Request;
 use url::Url;
-use rustls::ClientConfig;
+use rustls::{ClientConfig, RootCertStore};
 use rustls::pki_types::ServerName;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -23,8 +23,8 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub async fn new(base_url: &Url) -> (Connection, Receiver<bool>) {
-        let send_request = connect_to_server(base_url).await;
+    pub async fn new(base_url: &Url, insecure: bool) -> (Connection, Receiver<bool>) {
+        let send_request = connect_to_server(base_url, insecure).await;
         let (sender, receiver) = mpsc::channel(1);
 
         (
@@ -61,12 +61,12 @@ impl Connection {
         }
     }
 }
-async fn connect_to_server(url: &Url) -> SendRequest<Bytes> {
+async fn connect_to_server(url: &Url, insecure: bool) -> SendRequest<Bytes> {
     let host = url.host_str().expect("URL does not contain a host");
     let port = url.port().unwrap_or(443);
 
     loop {
-        match attempt_connect(host, port).await {
+        match attempt_connect(host, port, insecure).await {
             Ok(v) => return v,
             Err(err) => {
                 eprintln!("{}", err);
@@ -76,25 +76,24 @@ async fn connect_to_server(url: &Url) -> SendRequest<Bytes> {
     }
 }
 
-async fn attempt_connect(host: &str, port: u16) -> Result<SendRequest<Bytes>, Box<dyn Error + Send>> {
-    // // Load the system's root certificates
-    // let mut root_store = RootCertStore::empty();
-    // root_store.add_parsable_certificates(
-    //     &rustls_native_certs::load_native_certs().expect("failed to load native certs")
-    // );
-    //
-    // let mut config = ClientConfig::builder()
-    //     .with_safe_defaults()
-    //     // .with_custom_certificate_verifier(Arc::new(tls::NoCertificateVerification{}))
-    //     .with_root_certificates(root_store)
-    //     .with_no_client_auth();
-
-    let mut config = ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(tls::SkipServerVerification{}))
-        .with_no_client_auth();
+async fn attempt_connect(host: &str, port: u16, insecure: bool) -> Result<SendRequest<Bytes>, Box<dyn Error + Send>> {
+    let mut config = if insecure {
+        ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(tls::SkipServerVerification{}))
+            .with_no_client_auth()
+    } else {
+        ClientConfig::builder()
+            .with_root_certificates(
+                RootCertStore {
+                    roots: webpki_roots::TLS_SERVER_ROOTS.into(),
+                }
+            )
+            .with_no_client_auth()
+    };
 
     config.alpn_protocols.push(b"h2".to_vec()); // Enable HTTP/2 ALPN protocol negotiation.
+
     let tls_connector = TlsConnector::from(Arc::new(config));
 
     let authority = format!("{}:{}", host, port);
