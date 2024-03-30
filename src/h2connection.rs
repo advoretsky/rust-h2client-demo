@@ -5,7 +5,7 @@ use bytes::Bytes;
 use h2::{client, SendStream};
 use h2::client::{ResponseFuture, SendRequest};
 use http::Request;
-use reqwest::Url;
+use url::Url;
 use rustls::ClientConfig;
 use rustls::pki_types::ServerName;
 use tokio::net::TcpStream;

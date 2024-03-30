@@ -7,11 +7,11 @@ use std::time::Duration;
 use async_channel::{Receiver, Sender};
 use futures::select_biased;
 use http::Version;
-use reqwest::Url;
 use tokio::time::sleep;
-use crate::h2connection::Connection;
 use futures::FutureExt;
+use url::Url;
 
+use crate::h2connection::Connection;
 
 const BATCH_DELAY: u64 = 5;
 
