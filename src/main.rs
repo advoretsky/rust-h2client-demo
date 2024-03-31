@@ -172,7 +172,7 @@ async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &str, max_str
                 },
             }.clone();
 
-            if connection.requests_sent() < max_streams {
+            if max_streams == 0 || connection.requests_sent() < max_streams {
                 select_biased! {
                     // it's important handling channel first
                     _ = receiver.as_mut().unwrap().recv().fuse() => {
@@ -184,13 +184,15 @@ async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &str, max_str
                                 eprintln!("error waiting for SendRequest to become ready: {}", err);
                             }
                             Ok(_) => {
+                                // the connection is healthy and ready
                                 break connection
                             }
                         }
                     }
                 }
             }
-            println!("recreating a connection");
+            // the connection has failed - drop it
+            println!("closing a failed connection");
             receiver.unwrap().close();
             h2 = None;
             receiver = None;
