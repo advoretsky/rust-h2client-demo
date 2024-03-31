@@ -137,7 +137,7 @@ async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &str, max_str
 
     let mut handles = Vec::new();
 
-    let mut h2: Option<Connection> = None;
+    let mut h2connection: Option<Connection> = None;
     let mut receiver: Option<tokio::sync::mpsc::Receiver<bool>> = None;
 
     while let Ok(filename) = rx.recv().await {
@@ -162,13 +162,12 @@ async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &str, max_str
         };
 
         let mut connection = loop {
-            let connection = match h2.as_ref() {
+            let connection = match h2connection.as_ref() {
                 Some(v) => v,
                 None => {
-                    let (h, r) = Connection::new(&base_url, insecure).await;
-                    h2 = Some(h);
-                    receiver = Some(r);
-                    h2.as_ref().unwrap()
+                    let (c, r) = Connection::new(&base_url, insecure).await;
+                    (h2connection, receiver) = (Some(c), Some(r));
+                    h2connection.as_ref().unwrap()
                 },
             }.clone();
 
@@ -194,7 +193,7 @@ async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &str, max_str
             // the connection has failed - drop it
             println!("closing a failed connection");
             receiver.unwrap().close();
-            h2 = None;
+            h2connection = None;
             receiver = None;
         };
 

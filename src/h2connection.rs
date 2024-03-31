@@ -25,15 +25,15 @@ pub struct Connection {
 impl Connection {
     pub async fn new(base_url: &Url, insecure: bool) -> (Connection, Receiver<bool>) {
         let send_request = connect_to_server(base_url, insecure).await;
-        let (sender, receiver) = mpsc::channel(1);
+        let (status_sender, status_receiver) = mpsc::channel(1);
 
         (
             Connection {
                 send_request,
-                status_sender: sender,
+                status_sender,
                 requests_counter: Arc::new(AtomicU32::new(0)),
             },
-            receiver
+            status_receiver
         )
     }
 
