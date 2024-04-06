@@ -44,7 +44,7 @@ async fn main() {
 
 async fn fetch_filenames(tx: Sender<String>, files_number: u32) {
     // Simulating a continuous process of fetching filenames
-    for i in 0..files_number {
+    for i in 1..(files_number+1) {
         let filename = format!("file-{:06}.json", i);
         match tx.send(filename).await {
             Ok(_) => {}
