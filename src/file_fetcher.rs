@@ -11,7 +11,6 @@ use crate::h2connection::Connection;
 use futures::FutureExt;
 use tokio::select;
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 
 #[derive(Clone)]
 struct Task {
@@ -48,7 +47,7 @@ pub(crate) async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &s
     };
 
     // it's important: retry_sender doesn't get here
-    let (mut task_receiver, feeder_handle) = task_producer(rx, 256, 1024);
+    let mut task_receiver = task_producer(rx, 256, 1024);
 
     let mut h2connection: Option<Connection> = None;
     let mut receiver: Option<mpsc::Receiver<bool>> = None;
@@ -149,10 +148,6 @@ pub(crate) async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &s
         }
     }
 
-    // TODO: consider removing this await call
-    println!("waiting for feeder to finish");
-    feeder_handle.await.expect("error waiting for feeder to finish");
-
     while !handles.is_empty() {
         println!("{} tasks not finished yet", handles.len());
 
@@ -162,13 +157,13 @@ pub(crate) async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &s
     println!("all {} tasks are finished. {} connection were established", streams_used, connection_established);
 }
 
-fn task_producer(rx: Receiver<String>, source_buffer: usize, retry_buffer: usize) -> (mpsc::Receiver<Task>, JoinHandle<()>) {
+fn task_producer(rx: Receiver<String>, source_buffer: usize, retry_buffer: usize) -> tokio::sync::mpsc::Receiver<Task> {
     let (input_sender, mut input_receiver) = mpsc::channel::<Task>(source_buffer);
     let (retry_sender, mut retry_receiver) = mpsc::channel::<Task>(retry_buffer);
 
     let (sender, combined_receiver) = mpsc::channel(32);
 
-    let feeder_handler = tokio::spawn(async move {
+    tokio::spawn(async move {
         while let Ok(filename) = rx.recv().await {
             let task = Task {
                 filename,
@@ -184,7 +179,7 @@ fn task_producer(rx: Receiver<String>, source_buffer: usize, retry_buffer: usize
         }
     });
 
-    let combined_handle= tokio::spawn(async move {
+    tokio::spawn(async move {
         loop {
             let msg = select! {
                 biased;
@@ -205,20 +200,5 @@ fn task_producer(rx: Receiver<String>, source_buffer: usize, retry_buffer: usize
         }
     });
 
-    (
-        combined_receiver,
-        tokio::spawn(async move {
-            match combined_handle.await {
-                Ok(_) => {}
-                Err(_) => {
-                    return
-                }
-            }
-            match feeder_handler.await {
-                Ok(_) => {}
-                Err(_) => {}
-            }
-            return
-        }),
-    )
+    combined_receiver
 }
