@@ -53,10 +53,10 @@ impl Connection {
     pub async fn mark_connection_unhealthy(&self) {
         match self.status_sender.try_send(false) {
             Ok(_) => {
-                eprintln!{"reported on unhealthy connection"}
+                log::debug!{"reported on unhealthy connection"}
             }
             Err(err) => {
-                eprintln!("error reporting unhealthy connection: {}", err)
+                log::trace!("error reporting unhealthy connection: {}", err)
             }
         }
     }
@@ -69,7 +69,7 @@ async fn connect_to_server(url: &Url, insecure: bool) -> SendRequest<Bytes> {
         match attempt_connect(host, port, insecure).await {
             Ok(v) => return v,
             Err(err) => {
-                eprintln!("{}", err);
+                log::warn!("{}", err);
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             }
         }
@@ -121,7 +121,7 @@ async fn negotiate_h2_connection(tcp: TlsStream<TcpStream>) -> Result<SendReques
     let (send_request, connection) = client::handshake(tcp).await?;
     tokio::spawn(async move {
         if let Err(err) = connection.await {
-            eprintln!("Error occurred while waiting for connection to close: {}", err);
+            log::warn!("Error occurred while waiting for connection to close: {}", err);
         }
     });
     Ok(send_request)

@@ -21,10 +21,10 @@ impl Task {
     async fn retry(self) {
         match self.retry_sender.send(self.clone()).await {
             Ok(_) => {
-                eprintln!("successfully sent {} for retry", self.filename)
+                log::debug!("successfully sent {} for retry", self.filename)
             }
             Err(err) => {
-                eprintln!("failed to send {} for retry: {}", self.filename, err)
+                log::error!("failed to send {} for retry: {}", self.filename, err)
             }
         }
     }
@@ -40,7 +40,7 @@ pub(crate) async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &s
     let base_url = match base_url.parse::<Url>() {
         Ok(v) => v,
         Err(err) => {
-            eprintln!("{}", err);
+            log::error!("{}", err);
             return
         }
     };
@@ -74,12 +74,12 @@ pub(crate) async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &s
                     biased;
                     // it's important handling channel first
                     _ = receiver.as_mut().unwrap().recv() => {
-                        eprintln!("connection unhealthy signal received")
+                        log::debug!("connection unhealthy signal received")
                     }
                     val = connection.clone().ready() => {
                         match val {
                             Err(err) => {
-                                eprintln!("error waiting for SendRequest to become ready: {}", err);
+                                log::warn!("error waiting for SendRequest to become ready: {}", err);
                             }
                             Ok(_) => {
                                 // the connection is healthy and ready - return it
@@ -90,7 +90,7 @@ pub(crate) async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &s
                 }
             }
             // the connection has failed - drop it
-            println!("closing a failed connection");
+            log::debug!("closing a failed connection");
             receiver.unwrap().close();
             h2connection = None;
             receiver = None;
@@ -99,7 +99,7 @@ pub(crate) async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &s
         let uri = match base_url.join(&task.filename) {
             Ok(v) => v,
             Err(err) => {
-                eprintln!("error building file path for {}: {}. skipping", task.filename, err);
+                log::error!("error building file path for {}: {}. skipping", task.filename, err);
                 return
             }
         };
@@ -110,20 +110,20 @@ pub(crate) async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &s
             .body(()) {
             Ok(v) => v,
             Err(err) => {
-                eprintln!("failed building a request: {}. skipping", err);
+                log::error!("failed building a request: {}. skipping", err);
                 return
             }
         };
 
         let handle = tokio::spawn(async move {
 
-            println!("sending request to fetch {}", uri.as_str());
+            log::debug!("sending request to fetch {}", uri.as_str());
             let (response, _) = connection.send_request(request.clone()).unwrap();
 
             let (head, mut body) = match response.await {
                 Ok(r) => r.into_parts(),
                 Err(err) => {
-                    eprintln!("failed downloading file {}: {}", uri.as_str(), err);
+                    log::warn!("failed downloading file {}: {}", uri.as_str(), err);
                     connection.mark_connection_unhealthy().await;
                     task.retry().await;
                     return
@@ -132,7 +132,7 @@ pub(crate) async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &s
             let mut flow_control = body.flow_control().clone();
             while let Some(chunk) = body.data().await {
                 let chunk = chunk.unwrap();
-                println!("handler {:?} status: {} RX: {:?} for {}", id, head.status, chunk.len(), task.filename); // TODO write to the file
+                log::trace!("handler {:?} status: {} RX: {:?} for {}", id, head.status, chunk.len(), task.filename); // TODO write to the file
 
                 // Let the server send more data.
                 let _ = flow_control.release_capacity(chunk.len());
@@ -141,7 +141,7 @@ pub(crate) async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &s
         handles.push(handle);
         streams_used += 1;
         if handles.len() % 20 == 0 {
-            println!("sleeping {} between batches", BATCH_DELAY);
+            log::trace!("sleeping {} between batches", BATCH_DELAY);
             sleep(Duration::from_millis(BATCH_DELAY)).await;
             // Update the list of handles to remove completed tasks
             handles.retain(|handle| !handle.is_finished());
@@ -149,12 +149,12 @@ pub(crate) async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &s
     }
 
     while !handles.is_empty() {
-        println!("{} tasks not finished yet", handles.len());
+        log::debug!("{} tasks not finished yet", handles.len());
 
         sleep(Duration::from_millis(1000)).await;
         handles.retain(|handle| !handle.is_finished());
     }
-    println!("all {} tasks are finished. {} connection were established", streams_used, connection_established);
+    log::info!("all {} tasks are finished. {} connection were established", streams_used, connection_established);
 }
 
 fn task_producer(rx: Receiver<String>, source_buffer: usize, retry_buffer: usize) -> tokio::sync::mpsc::Receiver<Task> {
@@ -172,7 +172,7 @@ fn task_producer(rx: Receiver<String>, source_buffer: usize, retry_buffer: usize
             match input_sender.send(task).await {
                 Ok(_) => {}
                 Err(err) => {
-                    eprintln!("error feeding filename: {}", err);
+                    log::error!("error feeding filename: {}", err);
                     break
                 }
             }
@@ -194,7 +194,7 @@ fn task_producer(rx: Receiver<String>, source_buffer: usize, retry_buffer: usize
                 }
             };
             if let Err(err) = sender.send(msg).await {
-                eprintln!("failed sending to combined channel: {}", err);
+                log::error!("failed sending to combined channel: {}", err);
                 break
             }
         }

@@ -4,11 +4,16 @@ mod file_fetcher;
 mod config;
 
 use async_channel::Sender;
+use simple_logger::SimpleLogger;
 
 const BATCH_DELAY: u64 = 5;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    let logger = SimpleLogger::new();
+    log::set_max_level(log::LevelFilter::Debug);
+    log::set_boxed_logger(Box::new(logger)).unwrap();
+
     let config = config::parse_args();
 
 
@@ -49,7 +54,7 @@ async fn fetch_filenames(tx: Sender<String>, files_number: u32) {
         match tx.send(filename).await {
             Ok(_) => {}
             Err(err) => {
-                eprintln!("failed to dispatch filename: {}", err);
+                log::error!("failed to dispatch filename: {}", err);
                 break;
             }
         }

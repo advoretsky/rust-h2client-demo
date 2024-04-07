@@ -55,7 +55,7 @@ pub(crate) fn parse_args() -> Config {
             }
 
             _ => {
-                eprintln!("Unknown option: {}", args[i]);
+                log::error!("Unknown option: {}", args[i]);
             }
         }
         i += 1;
