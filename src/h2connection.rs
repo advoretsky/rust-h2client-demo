@@ -53,7 +53,7 @@ impl Connection {
     pub async fn mark_connection_unhealthy(&self) {
         match self.status_sender.try_send(false) {
             Ok(_) => {
-                println!{"reported on unhealthy connection"}
+                eprintln!{"reported on unhealthy connection"}
             }
             Err(err) => {
                 eprintln!("error reporting unhealthy connection: {}", err)
