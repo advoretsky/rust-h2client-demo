@@ -6,7 +6,15 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "1.35.1", features = ["full"] }
-reqwest = { version = "0.11.23", default-features = false, features = ["stream", "rustls-tls"] }
+async-channel = "2.1.1"
 futures = "0.3.30"
-sysinfo = "0.30.5"
+tokio = { version = "1.36.0", features = ["rt", "time", "net", "macros"] }
+http = "1.0.0"
+h2 = "0.4.2"
+bytes = "1.5.0"
+rustls = "0.23.4"
+tokio-rustls = "0.26.0"
+rustls-native-certs = "0.7.0"
+rustls-webpki = "0.102.2"
+url = "2.5.0"
+webpki-roots = "0.26.1"
