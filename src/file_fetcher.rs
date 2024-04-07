@@ -2,15 +2,14 @@ use std::fmt;
 use std::fmt::Display;
 use std::time::Duration;
 use async_channel::Receiver;
-use futures::select_biased;
 use http::Version;
-use tokio::time::sleep;
-use url::Url;
-use crate::BATCH_DELAY;
-use crate::h2connection::Connection;
-use futures::FutureExt;
 use tokio::select;
 use tokio::sync::mpsc;
+use tokio::time::sleep;
+use url::Url;
+
+use crate::BATCH_DELAY;
+use crate::h2connection::Connection;
 
 #[derive(Clone)]
 struct Task {
@@ -70,13 +69,15 @@ pub(crate) async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &s
                 },
             }.clone();
 
+            // return connection if there is capacity and it's ready
             if max_streams == 0 || connection.requests_sent() < max_streams {
-                select_biased! {
+                select! {
+                    biased;
                     // it's important handling channel first
-                    _ = receiver.as_mut().unwrap().recv().fuse() => {
+                    _ = receiver.as_mut().unwrap().recv() => {
                         eprintln!("connection unhealthy signal received")
                     }
-                    val = connection.clone().ready().fuse() => {
+                    val = connection.clone().ready() => {
                         match val {
                             Err(err) => {
                                 eprintln!("error waiting for SendRequest to become ready: {}", err);
