@@ -45,7 +45,6 @@ pub(crate) async fn handle_filenames(rx: Receiver<String>, id: u32, base_url: &s
         }
     };
 
-    // it's important: retry_sender doesn't get here
     let mut task_receiver = task_producer(rx, 256, 1024);
 
     let mut h2connection: Option<Connection> = None;
