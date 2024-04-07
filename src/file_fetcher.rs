@@ -187,6 +187,7 @@ fn task_producer(rx: Receiver<String>, source_buffer: usize, retry_buffer: usize
     let combined_handle= tokio::spawn(async move {
         loop {
             let msg = select! {
+                biased;
                 Some(msg) = retry_receiver.recv() =>  {
                     msg
                 }
